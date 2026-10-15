@@ -30,33 +30,85 @@ jobs:
         run: |
           set -euo pipefail
           MC_VERSION=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2)
-          echo "Target Minecraft version: $MC_VERSION"
-          if ! curl -sf "https://meta.fabricmc.net/v2/versions/game" | grep -qF "\"version\":\"$MC_VERSION\""; then
-            AVAILABLE=$(curl -s "https://meta.fabricmc.net/v2/versions/game" | grep -oE '"version":"[^"]+"' | head -n 20 | tr '\n' ' ')
-            echo "::error::Minecraft version $MC_VERSION not found. Latest 20 available: $AVAILABLE"
+          GAME_VERSIONS=$(curl -s "https://meta.fabricmc.net/v2/versions/game")
+          if ! echo "$GAME_VERSIONS" | grep -qF "\"version\":\"$MC_VERSION\""; then
+            {
+              echo "Minecraft version **$MC_VERSION** was not found in Fabric's game version list."
+              echo
+              echo "First 30 entries from https://meta.fabricmc.net/v2/versions/game:"
+              echo '```'
+              echo "$GAME_VERSIONS" | grep -oE '"version":"[^"]+"' | head -n 30
+              echo '```'
+            } > /tmp/diag.md
+            curl -s -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+              -d "$(jq -Rs '{body: .}' /tmp/diag.md)"
             exit 1
           fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve matching fabric-api version
         id: fabric-api
         run: |
           set -euo pipefail
           MC_VERSION=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2)
-          VERSION=$(curl -sf "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml" \
+          METADATA=$(curl -s "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml")
+          VERSION=$(echo "$METADATA" \
             | grep -oE '<version>[^<]+</version>' \
             | sed -E 's/<\/?version>//g' \
             | grep -F "+$MC_VERSION" \
             | tail -n1 || true)
           if [ -z "$VERSION" ]; then
-            RECENT=$(curl -s "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml" | grep -oE '<version>[^<]+</version>' | tail -n 20 | tr '\n' ' ')
-            echo "::error::No published fabric-api build found for Minecraft $MC_VERSION. Most recent builds: $RECENT"
+            {
+              echo "No published fabric-api build found for Minecraft **$MC_VERSION**."
+              echo
+              echo "Last 30 fabric-api versions from maven-metadata.xml:"
+              echo '```'
+              echo "$METADATA" | grep -oE '<version>[^<]+</version>' | sed -E 's/<\/?version>//g' | tail -n 30
+              echo '```'
+            } > /tmp/diag.md
+            curl -s -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+              -d "$(jq -Rs '{body: .}' /tmp/diag.md)"
             exit 1
           fi
           echo "Resolved fabric-api version: $VERSION"
           sed -i "s/^fabric_api_version=.*/fabric_api_version=$VERSION/" gradle.properties
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build with Gradle
-        run: ./gradlew build --stacktrace
+        id: gradle-build
+        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew build --stacktrace > /tmp/gradle.log 2>&1
+          EXIT=$?
+          tail -n 300 /tmp/gradle.log
+          exit $EXIT
+
+      - name: Report Gradle failure as commit comment
+        if: steps.gradle-build.outcome == 'failure'
+        run: |
+          {
+            echo "Gradle build failed. Last 200 lines of output:"
+            echo '```'
+            tail -n 200 /tmp/gradle.log
+            echo '```'
+          } > /tmp/diag.md
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            -d "$(jq -Rs '{body: .}' /tmp/diag.md)"
+          exit 1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
