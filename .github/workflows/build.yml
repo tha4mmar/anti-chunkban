@@ -26,6 +26,35 @@ jobs:
       - name: Grant execute permission to gradlew
         run: chmod +x gradlew
 
+      - name: Verify Minecraft version exists
+        run: |
+          set -euo pipefail
+          MC_VERSION=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2)
+          echo "Target Minecraft version: $MC_VERSION"
+          if ! curl -sf "https://meta.fabricmc.net/v2/versions/game" | grep -qF "\"version\":\"$MC_VERSION\""; then
+            echo "::error::Minecraft version $MC_VERSION was not found in Fabric's game version list. Latest available:"
+            curl -s "https://meta.fabricmc.net/v2/versions/game" | grep -oE '"version":"[^"]+"' | head -n 20
+            exit 1
+          fi
+
+      - name: Resolve matching fabric-api version
+        id: fabric-api
+        run: |
+          set -euo pipefail
+          MC_VERSION=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2)
+          VERSION=$(curl -sf "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml" \
+            | grep -oE '<version>[^<]+</version>' \
+            | sed -E 's/<\/?version>//g' \
+            | grep -F "+$MC_VERSION" \
+            | tail -n1 || true)
+          if [ -z "$VERSION" ]; then
+            echo "::error::No published fabric-api build found for Minecraft $MC_VERSION. Most recent builds:"
+            curl -s "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml" | grep -oE '<version>[^<]+</version>' | tail -n 20
+            exit 1
+          fi
+          echo "Resolved fabric-api version: $VERSION"
+          sed -i "s/^fabric_api_version=.*/fabric_api_version=$VERSION/" gradle.properties
+
       - name: Build with Gradle
         run: ./gradlew build --stacktrace
 
