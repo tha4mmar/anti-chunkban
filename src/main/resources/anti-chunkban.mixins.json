@@ -5,6 +5,7 @@
   "mixins": [
     "ByteBufCodecsMixin",
     "ClientboundLevelChunkPacketDataMixin",
+    "ConnectionMixin",
     "ClientboundLevelChunkWithLightPacketMixin",
     "ClientboundLightUpdatePacketDataMixin",
     "CompressionDecoderMixin",
